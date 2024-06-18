@@ -1,0 +1,605 @@
+---
+title: "MD_Drivers_Crash"
+author: "Rachel Rolle"
+date: "2024-05-25"
+output:
+  word_document: default
+  html_document: default
+---
+
+Data Source: [Data_Info](https://catalog.data.gov/dataset/crash-reporting-drivers-data)
+
+```{r}
+library(tidyverse)
+```
+
+## Brief Exploration of the Data
+```{r}
+crashes <- read.csv("Crash_Reporting_Drivers_Data.csv")
+
+dim(crashes) #172105 rows and 43 columns
+
+crashes <-na.omit(crashes)
+dim(crashes) #172071 rows and 43 columns
+
+#date <- crashes %>%
+  #mutate(DATE_TIME = as.Date(Crash.Date.Time, format = "%m/%d/%Y %H:%M:%S"))
+
+# Find the oldest date
+#oldest_date <- min(date$DATE_TIME)
+
+# Find the newest date
+#newest_date <- max(date$DATE_TIME)
+
+# Print the results
+#print(paste("Oldest date:", oldest_date)) , 2015-01-01
+#print(paste("Newest date:", newest_date)) , 2024-01-03
+```
+
+
+## Data Cleaning
+
+- Removing classes that were Unknown, Other ... to increase validity.
+- Reduced variable's, Substance.Abuse & Injury.Severity, classes using case_when()
+- Selected only 12 out of the 42 variable to simplify problem
+```{r}
+library(lubridate)
+set.seed(42)
+is_unwanted <- function(x) {
+  x %in% c("UNKNOWN", "Unknown", "OTHER", "(Other)")
+}
+#print(colnames(crashes))
+crashes <- crashes %>%
+  filter(!if_any(everything(), is_unwanted)) %>%
+  mutate(
+    DATE_TIME = as.POSIXct(Crash.Date.Time, format = "%m/%d/%Y %H:%M:%S"),
+    Substance.Abuse = case_when(
+      Driver.Substance.Abuse %in% c("ALCOHOL PRESENT", "ILLEGAL DRUG PRESENT", "MEDICATION PRESENT", "COMBINED SUBSTANCE PRESENT") ~ "Yes",
+      Driver.Substance.Abuse %in% c("ALCOHOL CONTRIBUTED", "ILLEGAL DRUG CONTRIBUTED", "MEDICATION CONTRIBUTED", "COMBINATION CONTRIBUTED") ~ "Yes",
+      TRUE ~ "No"
+    ),
+    Injury.Severity = case_when(
+      Injury.Severity %in% c("NO APPARENT INJURY") ~ "NO INJURY",
+      Injury.Severity %in% c("SUSPECTED SERIOUS INJURY", "FATAL INJURY", "POSSIBLE INJURY", "SUSPECTED MINOR INJURY") ~ "INJURY"
+    ),
+    across(c(Injury.Severity, Vehicle.Body.Type, Driver.At.Fault, Substance.Abuse, Traffic.Control, Weather, Equipment.Problems, Collision.Type), as.factor)
+  )%>%
+  mutate(
+    DATE = as.Date(DATE_TIME),
+    TIME = hms::as_hms(format(DATE_TIME, "%H:%M:%S"))
+  )%>%
+  select(Injury.Severity, Speed.Limit, Vehicle.Body.Type, Driver.At.Fault, Substance.Abuse, Traffic.Control, Weather, Equipment.Problems, Collision.Type, TIME, Latitude, Longitude)
+
+dim(crashes) #104174 rows & 12 columns
+head(crashes)
+```
+
+## Need to Undersample Injury Status
+
+- Under sampled majority class (no injury) 
+```{r}
+library(caret)
+set.seed(42)
+
+for (col in names(crashes)) {
+  # Check if the column is a factor
+  if (is.factor(crashes[[col]])) {
+    # Check if "N/A" is a level in the factor
+    if ("N/A" %in% levels(crashes[[col]])) {
+      # Remove the "N/A" level from the factor
+      crashes[[col]] <- droplevels(crashes[[col]], exclude = "N/A")
+    }
+  }
+}
+
+# Remove rows with any NA values
+crashes <- na.omit(crashes)
+
+# Calculate the number of samples in the minority class
+minority_count <- sum(crashes$Injury.Severity == "INJURY")
+
+# Sample randomly from the majority class to match the number of samples in the minority class
+crashes <- rbind(
+    crashes[crashes$Injury.Severity == "INJURY", ],
+    crashes[sample(which(crashes$Injury.Severity == "NO INJURY"), minority_count), ]
+)
+
+dim(crashes) #29094 rows & 12 columns
+head(crashes)
+
+summary(crashes)
+
+
+
+```
+
+## Train and Test Split
+
+```{r}
+set.seed(42)
+
+trainIndex <- sample(1:nrow(crashes), size = 0.8 * nrow(crashes))
+
+trainData <- crashes[trainIndex, ]
+testData <- crashes[-trainIndex, ]
+
+dim(trainData) #23275 rows and 12 columns
+dim(testData) #5819 rows and 12 columns
+```
+
+
+
+
+# Exploratory Data Analysis
+
+```{r}
+str(trainData) #Checking variable types
+summary(trainData)
+```
+
+
+### Numerical Variables
+```{r}
+# Histogram for Speed Limit
+ggplot(trainData, aes(x = Speed.Limit)) +
+  geom_histogram(binwidth = 5, fill = "forestgreen", color = "black") +
+  labs(title = "Distribution of Speed Limit", x = "Speed Limit", y = "Count")
+
+# Summary statistics for Speed Limit
+summary(trainData$Speed.Limit)
+
+```
+### Categorical Variables
+```{r}
+# Bar plot for Injury Severity: Classes are now sampled
+ggplot(trainData, aes(x = Injury.Severity)) +
+  geom_bar(fill = "forestgreen", color = "black") +
+  labs(title = "Distribution of Injury Severity", x = "Injury Severity", y = "Count")
+
+```
+
+## Speed vs Injury Severity
+```{r}
+# Box plot for Speed Limit by Injury Severity
+ggplot(trainData, aes(x = Injury.Severity, y = Speed.Limit, color = Injury.Severity)) +
+  geom_boxplot() +
+  labs(title = "Speed Limit by Injury Severity", x = "Injury Severity", y = "Speed Limit",
+  x = NULL,
+  y = "Count")+
+  theme(axis.text.x = element_blank()) 
+  
+
+```
+
+## Plot and Color code by Categorical Response Variable
+
+More classes: Vehicle Type, Traffic Control, Weather, Equipment Problems, Collison Type
+
+Simple (Yes or No Response): Driver.At.Fault, Substance.Abuse
+
+```{r}
+ggplot(trainData, aes(Speed.Limit, Collision.Type, color = Injury.Severity))+
+  geom_point()+
+  labs(title = latex2exp::TeX("Speed.Limit $X_1$, Collision.Type $X_2$ & Response Y with 2 Cat."))+ 
+  xlab(latex2exp::TeX("$X_1$")) +
+  ylab(latex2exp::TeX("$X_2$"))
+```
+
+
+## Geospatial Analysis
+```{r}
+ggplot(crashes, aes(x = Longitude, y = Latitude)) +
+  geom_point(aes(color = Injury.Severity), alpha = 0.5) +
+  labs(title = "Geographical Distribution of Crashes by Injury Severity", x = "Longitude", y = "Latitude")+
+  facet_wrap(~ Injury.Severity)+
+  theme(strip.text = element_blank())
+# Fatal injury and serious injury seems to be congested into one area not spread out so proactive measures should be a focus on this area 
+```
+
+
+## Time Series Analysis -go back
+
+```{r}
+crashes_by_date <- trainData %>%
+  group_by(TIME) %>%
+  summarise(Total_Crashes = n())%>%
+  arrange(TIME)
+
+# Time series plot
+ggplot(crashes_by_date, aes(x = TIME, y = Total_Crashes)) +
+  geom_line() +
+  labs(title = "Time Series of Crashes by Time of Day", x = "Time of Day", y = "Total Crashes") # more people are driving during the day so naturally you will see more crashes
+
+#Substance Abuse
+crashes_by_time <- trainData %>%
+  group_by(TIME, Substance.Abuse) %>%
+  summarise(Total_Crashes = n())
+
+# Time series plot
+ggplot(crashes_by_time, aes(x = TIME, y = Total_Crashes, color = Substance.Abuse)) +
+  geom_line() +
+  labs(title = "Time Series of Crashes by Time of Day", x = "Time of Day", y = "Total Crashes") 
+
+
+#Driver at Fault
+
+crashes_by_time <- trainData %>%
+  group_by(TIME, Driver.At.Fault) %>%
+  summarise(Total_Crashes = n())
+
+# Time series plot
+ggplot(crashes_by_time, aes(x = TIME, y = Total_Crashes, color = Driver.At.Fault)) +
+  geom_line() +
+  labs(title = "Time Series of Crashes by Time of Day", x = "Time of Day", y = "Total Crashes") 
+
+
+```
+
+
+## Contingency Table & Chisquared Test
+
+## Convert to dummy variables to be further assessed
+
+From the correlation matrix, there seems to be no collinearity between  variables.
+```{r}
+library(caret)
+
+# Convert qualitative variables to dummy variables
+set.seed(42)
+dummy_model <- dummyVars(~ . - 1 - Speed.Limit - TIME - Latitude -Longitude, data = trainData, fullRank = TRUE)
+
+trainData_dummy <- predict(dummy_model, newdata = trainData)
+
+tdummy_model <- dummyVars(~ . - 1 - Speed.Limit - TIME - Latitude -Longitude, data = trainData, fullRank = TRUE)
+
+testData_dummy <- predict(dummy_model, newdata = testData)
+
+# Include original variables back into training dataset
+trainData_final <- cbind(trainData[, c("Speed.Limit")], trainData_dummy)
+
+# Include original variables back into testing dataset
+testData_final <- cbind(testData[, c("Speed.Limit")], testData_dummy)
+
+# Calculate correlations
+cor_matrix <- cor(trainData_final)
+
+#print(cor_matrix)
+```
+
+
+## Logistic Regression
+
+
+```{r}
+#injury.glm <- glm(Injury.Severity~., data =crashes, family= binomial)
+#AIC<- step(injury.glm, direction = "both") #AIC
+
+#BIC <- step(injury.glm, direction="both", k=log(length(injury.glm$fitted.values))) #BIC
+
+
+#May be the best for a complex model
+AIC_formula <- (Injury.Severity ~ Speed.Limit + Vehicle.Body.Type + Driver.At.Fault + 
+    Substance.Abuse + Traffic.Control + Collision.Type + Latitude) #7
+
+# Simpler Formula
+BIC_formula <- (Injury.Severity ~ Speed.Limit + Vehicle.Body.Type + Driver.At.Fault + 
+    Collision.Type + Latitude) #5
+```
+
+Compare Logistic Regression to new formula
+*There is statistical significance of adding more variables to the improve the model*
+```{r}
+
+red <- glm(BIC_formula, family = binomial, data = trainData)
+full <- glm(AIC_formula, family= binomial, data= trainData)
+
+aout <- anova(red, full, test= "Chisq")
+aout
+```
+
+
+```{r}
+# Correcting the family parameter and removing duplicate exclusions
+injury.glm <- glm(AIC_formula, family = binomial, data = trainData)
+
+# Display the summary of the fitted model
+glm_results <- summary(injury.glm)
+
+
+p_values = glm_results$coefficients[, "Pr(>|z|)"] 
+
+
+cbind(p_values)
+```
+
+
+
+# Fit and Tune Each Model
+
+```{r setup, include=FALSE}
+library(caret)        # For training and evaluating models, confusion matrices, and cross-validation
+library(e1071)        # For SVM and KNN
+library(randomForest) # For Random Forest
+library(class)        # For KNN
+library(nnet)         # For Logistics Regression
+library(class)
+
+```
+
+## Logistic Regression
+
+### Cross Validation
+```{r,warning=FALSE, message= FALSE}
+set.seed(42)
+# Define your training control
+train_control <- trainControl(method = "cv", number = 5, savePredictions = "final")
+
+# Logistic Regression
+# Define the model
+model_logit <- train(AIC_formula, data = crashes, method = "glm", trControl = train_control, family = binomial)
+
+# Access the cross-validated predictions
+predictions <- model_logit$pred
+
+# Create a confusion matrix
+conf_matrix <- confusionMatrix(predictions$pred, predictions$obs)
+
+# Print the confusion matrix
+print(conf_matrix)
+
+#Accuracy: 0.6249
+#Sensitivity: 0.6905
+#Specificity: 0.5594
+```
+
+
+### ROC Curve Threshold
+```{r}
+set.seed(42)
+injury.glm <- glm(AIC_formula, family = binomial, data=trainData)
+
+#summary(injury.glm)
+
+
+roc.analysis <-function (object, newdata = NULL, newplot=TRUE)
+{
+if (is.null(newdata)) {
+pi.tp <- object$fitted[object$y == 1]
+pi.tn <- object$fitted[object$y == 0]
+}
+else {
+pi.tp <- predict(object, newdata, type = "response")[newdata$y == 1]
+pi.tn <- predict(object, newdata, type = "response")[newdata$y == 0]
+}
+pi.all <- sort(c(pi.tp, pi.tn))
+sens <- rep(1, length(pi.all)+1)
+specc <- rep(1, length(pi.all)+1)
+for (i in 1:length(pi.all)) {
+sens[i+1] <- mean(pi.tp >= pi.all[i], na.rm = T)
+specc[i+1] <- mean(pi.tn >= pi.all[i], na.rm = T)
+}
+npoints <- length(sens)
+area <- sum(0.5 * (sens[-1] + sens[-npoints]) * (specc[-npoints] -
+specc[-1]))
+lift <- (sens - specc)[-1]
+cutoff <- pi.all[lift == max(lift)][1]
+sensopt <- sens[-1][lift == max(lift)][1]
+specopt <- 1 - specc[-1][lift == max(lift)][1]
+par(pty="s")
+if (newplot){
+plot(specc, sens, col = "blue", xlim = c(0, 1), ylim = c(0, 1), type = "s",
+xlab = "FPR = 1-specificity", ylab = "TPR = sensitivity", main="ROC")
+abline(0, 1)
+}
+else lines(specc, sens, type="s", lty=2, col=2)
+list(pihat=as.vector(pi.all), sens=as.vector(sens[-1]),
+spec=as.vector(1-specc[-1]), area = area, cutoff = cutoff,
+sensopt = sensopt, specopt = specopt)
+}
+
+
+train.ROC <- roc.analysis(injury.glm)
+testData$Direction <- 1*(testData$Injury.Severity == 1)
+test.ROC <- roc.analysis(injury.glm, newdata=testData, newplot=F)
+
+
+train.ROC[(4:7)]
+```
+```{r}
+
+set.seed(42)
+test_prob <- predict(injury.glm, newdata=testData, type="response")
+test_pred <- ifelse(test_prob > 0.5018894, "No Injury", "Injury")
+
+# Create the confusion matrix
+confusion_matrix <- prop.table(table(Actual = testData$Injury.Severity, Predicted= test_pred))
+print(confusion_matrix)
+
+#Classification
+log.class <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Classification Rate:", log.class)) #0.626
+
+log.error <- 1-log.class
+print(paste("Error rate:", log.error)) #0.378
+
+```
+
+#Plot results
+
+```{r}
+# Combine the actual and predicted data
+plot_data <- data.frame(Actual = testData$Injury.Severity, 
+                        Predicted = test_pred, 
+                        Probability = test_prob)
+
+# Plot
+ggplot(plot_data, aes(x = Probability, y = Actual)) +
+  geom_jitter(aes(color = Predicted), width = 0.02, height = 0.1, alpha = 0.2) +
+  geom_vline(xintercept = 0.5018894, linetype = "dashed", color = "red") +
+  labs(title = "Logistic Regression Results", x = "Predicted Probability", y = "Actual Outcome") +
+  theme_minimal()
+
+```
+## QDA
+
+#### Cross Validation
+
+Accuracy: 0.5504
+Sensitivity: 0.6944
+Specificity: 0.4064
+```{r}
+set.seed(42)
+# Define your training control
+train_control <- trainControl(method = "cv", number = 5, savePredictions = "final")
+
+# Train the QDA model
+qda_model <- train(Injury.Severity ~ Latitude + TIME + Speed.Limit, data = crashes, method = "qda", trControl = train_control)
+
+# Access the cross-validated predictions
+predictions <- qda_model$pred
+
+# Create a confusion matrix
+conf_matrix <- confusionMatrix(predictions$pred, predictions$obs)
+
+# Print the confusion matrix
+print(conf_matrix)
+```
+
+#Train-Test-Split
+
+Accuracy: 0.548891562124076
+Sensitivity: 0.3354528
+Specificity: 0.2134387
+```{r}
+# Load the MASS package for QDA
+library(MASS)
+library(caret)
+set.seed(42)
+
+# Train the QDA model
+qda_model <- qda(Injury.Severity ~ Latitude + TIME + Speed.Limit, data = trainData)
+
+# Predictions on new data
+pred.test <- predict(qda_model, newdata = testData)$class
+
+# Create the confusion matrix
+confusion_matrix <- prop.table(table(Actual = testData$Injury.Severity, Predicted = pred.test))
+print(confusion_matrix)
+
+# Calculate the classification rate
+qda.class <- mean(pred.test == testData$Injury.Severity)
+print(paste("Classification Rate:", qda.class))
+
+# Calculate the error rate
+qda.error <- 1 - qda.class
+print(paste("Error rate:", qda.error))
+```
+
+
+## Random Forest
+
+### Cross Validation
+Sensitivity: 0.7637 
+Specificity: 0.4688
+Accuracy: 0.6162
+```{r}
+set.seed(42)
+# Define your training control
+train_control <- trainControl(method = "cv", number = 5, savePredictions= "final")
+
+#Model
+model_rf <- train(AIC_formula, data = crashes, trControl = train_control, method = "rf")
+
+
+# Access the cross-validated predictions
+predictions <- model_rf$pred
+
+# Create a confusion matrix
+conf_matrix <- confusionMatrix(predictions$pred, predictions$obs)
+
+# Print the confusion matrix
+print(conf_matrix)
+
+
+```
+### Train Test Split
+
+Accuracy = 0.6343
+Sensitivity = 0.7444
+Specificity = 0.5220
+
+
+```{r}
+# Load necessary libraries
+library(randomForest)
+library(caret)
+library(ggplot2)
+
+# Set seed for reproducibility
+set.seed(42)
+
+# Assuming AIC_formula, trainData, and testData are already defined
+# Train the random forest model
+model_rf <- randomForest(AIC_formula, data = trainData, mtry = 2)
+
+# Predict on test data
+pred_rf <- predict(model_rf, newdata = testData)
+
+# Calculate confusion matrix
+rf_conf_matrix <- confusionMatrix(pred_rf, testData$Injury.Severity)
+print(rf_conf_matrix)
+
+# Show variable importance
+importance_rf <- importance(model_rf)
+print(importance_rf)
+
+# Convert importance to a data frame for plotting
+importance_df <- data.frame(Variable = rownames(importance_rf), Importance = importance_rf[, 1])
+
+# Plot variable importance
+ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance, fill = Variable)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  xlab("Variables") +
+  ylab("Importance") +
+  ggtitle("Variable Importance in Random Forest Model") +
+  theme(legend.position = "none")
+
+```
+
+
+
+## Support Vector Machine
+
+- SVM takes  a lot of computational power train/test split would not be useful
+Svm model: 
+
+The final values used for the model were sigma =
+ (0.04408933) and C = 1.
+ 
+### Cross Validation
+Accuracy: 0.6257
+Sensitivity: 0.7433
+Specificity: 0.5080
+```{r, warning= FALSE, message=FALSE}
+
+set.seed(42)
+# Define your training control
+train_control <- trainControl(method = "cv", number = 5, savePredictions = "final")
+
+# Train the SVM model
+svm_model <- train(AIC_formula, data = crashes, method = "svmRadial", trControl = train_control)
+
+# Access the cross-validated predictions
+predictions <- svm_model$pred
+
+# Create a confusion matrix
+conf_matrix <- confusionMatrix(predictions$pred, predictions$obs)
+
+# Print the confusion matrix
+print(conf_matrix)
+
+```
+
+
+
